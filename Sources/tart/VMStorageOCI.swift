@@ -375,6 +375,40 @@ class VMStorageOCI: PrunableStorage {
     return result
   }
 
+  private func verifyHostCompatibility(_ name: RemoteName, registry: Registry, manifest: OCIManifest) async throws {
+    let configLayers = manifest.layers.filter { $0.mediaType == configMediaType }
+    guard configLayers.count == 1 else {
+      return
+    }
+
+    let configData: Data = try await retry(maxAttempts: 5) {
+      var data = Data()
+      try await registry.pullBlob(configLayers[0].digest) { chunk in
+        data.append(chunk)
+      }
+      return data
+    } recoverFromFailure: { error in
+      if error is URLError {
+        return .retry
+      }
+
+      return .throw
+    }
+
+    try Self.checkHostCompatibility(configData: configData, name: name)
+  }
+
+  static func checkHostCompatibility(configData: Data, name: RemoteName) throws {
+    do {
+      try VMConfig(fromJSON: configData).validateHostCompatibility()
+    } catch is UnsupportedHostOSError {
+      throw RuntimeError.PullFailed(
+        "\(name) can't run on this host: the host macOS version is too old for this image, please update macOS and try again")
+    } catch {
+      return
+    }
+  }
+
   func pull(
     _ name: RemoteName,
     registry: Registry,
@@ -443,6 +477,8 @@ class VMStorageOCI: PrunableStorage {
     if try !hasCompleteCachedImage(digestName, manifest: manifest, requireManifest: requireManifest) {
       let span = OTel.shared.tracer.spanBuilder(spanName: "pull").setActive(true).startSpan()
       defer { span.end() }
+
+      try await verifyHostCompatibility(name, registry: registry, manifest: manifest)
 
       let tmpVMDir = try VMDirectory.temporaryDeterministic(key: name.description)
       let preserveExplicitlyPulledMark = digestVMDir.isExplicitlyPulled()

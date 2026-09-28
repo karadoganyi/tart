@@ -93,6 +93,14 @@ struct VMConfig: Codable {
     self = try Self(fromJSON: try Data(contentsOf: fromURL))
   }
 
+  func validateHostCompatibility() throws {
+    #if arch(arm64)
+      if let darwin = platform as? Darwin, !darwin.hardwareModel.isSupported {
+        throw UnsupportedHostOSError()
+      }
+    #endif
+  }
+
   func toJSON() throws -> Data {
     try Config.jsonEncoder().encode(self)
   }
